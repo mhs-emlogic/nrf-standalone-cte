@@ -55,8 +55,6 @@ gpio_write(NRF_GPIO_Type *port, int pin, int value)
 static void
 radio_init(void)
 {
-  int cte_length_in_8us = 20; // must be >=2 and <=20 corresponding to >=16µs and <=160µs
-
   NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
   NRF_CLOCK->TASKS_HFCLKSTART = 1;
   while (!NRF_CLOCK->EVENTS_HFCLKSTARTED);
@@ -77,7 +75,7 @@ radio_init(void)
   NRF_RADIO->CRCPOLY = 0x00065b;
   NRF_RADIO->CRCINIT = 0x555555;
   
-  NRF_RADIO->TIFS = 150; // TODO is this neccessary?
+  NRF_RADIO->TIFS = 150; // TODO not sure if this is necessary...
 
   // Set access address
   NRF_RADIO->BASE0   = 0x89bed600; // See bluetooth spec 5.1, vol 6, part B, section 2.1.2.
@@ -85,6 +83,7 @@ radio_init(void)
   NRF_RADIO->TXADDRESS = 0; // Use logical address zero, made up of BASE0 and PREFIX0.AP0
 
   // Configure CTE
+  int cte_length_in_8us = 20; // must be >=2 and <=20 corresponding to >=16µs and <=160µs
   NRF_RADIO->DFEMODE = RADIO_DFEMODE_DFEOPMODE_AoA;
   NRF_RADIO->CTEINLINECONF = RADIO_CTEINLINECONF_CTEINLINECTRLEN_Disabled;
   NRF_RADIO->DFECTRL1 =
@@ -181,8 +180,8 @@ radio_send(int channel_index)
   };
   struct AdvPdu pdu = {
     .header =
-        //(6 << 0) | // PDU Type = ADV_SCAN_IND,
-        (0 << 0) | // PDU Type = ADV_IND,
+        //(6 << 0) | // PDU Type = ADV_SCAN_IND
+        (2 << 0) | // PDU Type = ADV_NONCONN_IND
         (0 << 4) | // RFU, not sure what this is for
         (0 << 5) | // ChSel bit
         (1 << 6) | // TxAdd bit, set to 1 because AdvA is a random address. See bluetooth spec 5.1, vol 6, part B, section 2.3.1.4.
