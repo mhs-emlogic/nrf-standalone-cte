@@ -58,6 +58,14 @@
         <configuration Name="Common" file_type="Assembly" />
       </file>
     </folder>
+    <configuration
+      Name="Debug"
+      WARNING_LEVEL="4 (All)"
+      gcc_c_only_all_warnings_command_line_options="-Wstrict-prototypes;-Wstrict-aliasing"
+      gcc_enable_all_warnings="No"
+      gcc_strict_prototypes_warning="Yes"
+      gcc_uninitialized_variables_warning="Yes"
+      gcc_unused_variable_warning="Yes" />
   </project>
   <configuration
     Name="Debug"

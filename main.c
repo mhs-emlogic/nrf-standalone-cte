@@ -202,7 +202,7 @@ radio_send(int channel_index)
 
 #define LED0    NRF_P0, 13
 
-void
+int
 main(void)
 {
   systick_init();
@@ -221,4 +221,6 @@ main(void)
     radio_send(38);
     radio_send(39);
   }
+
+  return 0;
 }
