@@ -75,7 +75,9 @@ radio_init(void)
   NRF_RADIO->CRCPOLY = 0x00065b;
   NRF_RADIO->CRCINIT = 0x555555;
   
-  NRF_RADIO->TIFS = 150; // TODO not sure if this is necessary...
+  NRF_RADIO->TIFS = 150; // See bluetooth spec 5.1, vol 6, part B, section 4.1.1.
+  // Note (Morten, 2022-04-27) My understanding is that TIFS only matters if I try to send multiple packets consecutively at the
+  // same frequency, which I don't do in this program.
 
   // Set access address
   NRF_RADIO->BASE0   = 0x89bed600; // See bluetooth spec 5.1, vol 6, part B, section 2.1.2.
@@ -88,10 +90,7 @@ radio_init(void)
   NRF_RADIO->CTEINLINECONF = RADIO_CTEINLINECONF_CTEINLINECTRLEN_Disabled;
   NRF_RADIO->DFECTRL1 =
     ((cte_length_in_8us << RADIO_DFECTRL1_NUMBEROF8US_Pos) & RADIO_DFECTRL1_NUMBEROF8US_Msk) |
-    (RADIO_DFECTRL1_DFEINEXTENSION_CRC << RADIO_DFECTRL1_DFEINEXTENSION_Pos) |
-    (RADIO_DFECTRL1_TSWITCHSPACING_2us << RADIO_DFECTRL1_TSWITCHSPACING_Pos) | // I don't think this matters because we are not doing antenna switching
-    (RADIO_DFECTRL1_TSAMPLESPACINGREF_1us << RADIO_DFECTRL1_TSAMPLESPACINGREF_Pos) | // ditto
-    (RADIO_DFECTRL1_TSAMPLESPACING_1us << RADIO_DFECTRL1_TSAMPLESPACING_Pos); // ditto
+    (RADIO_DFECTRL1_DFEINEXTENSION_CRC << RADIO_DFECTRL1_DFEINEXTENSION_Pos);
 
   // Configure packet data format
   NRF_RADIO->PCNF0 =
@@ -180,14 +179,14 @@ radio_send(int channel_index)
   };
   struct AdvPdu pdu = {
     .header =
-        //(6 << 0) | // PDU Type = ADV_SCAN_IND
-        (2 << 0) | // PDU Type = ADV_NONCONN_IND
+        //(6 << 0) | // PDU Type = ADV_SCAN_IND, only the InsightSIP AoA board recognizes this.
+        (2 << 0) | // PDU Type = ADV_NONCONN_IND, both the AoA board and the nRF Connect app on my phone recognize this.
         (0 << 4) | // RFU, not sure what this is for
         (0 << 5) | // ChSel bit
         (1 << 6) | // TxAdd bit, set to 1 because AdvA is a random address. See bluetooth spec 5.1, vol 6, part B, section 2.3.1.4.
         (0 << 7),  // RxAdd bit
     .length = 6,
-    .advertiser_address = { 0x01, 0x02, 0x03, 0x04, 0x05, 0xc6 },
+    .advertiser_address = { 0x01, 0x02, 0x03, 0x04, 0x05, 0xc6 }, // Same as the InsightSIP AoA dongle.
   };
 
   NRF_RADIO->PACKETPTR = (uint32_t) (void *) &pdu;
@@ -212,10 +211,19 @@ main(void)
   printf("Poggers\n");
 
   while (1) {
+    // Note (Morten, 2022-04-27) The waits here control the advertising interval. The interval is supposed to be a multiple of
+    // 0.625ms, but I think that only is relevant when writing the HCI part of a bluetooth stack.
+    // See bluetooth spec 5.1, vol 6, part B, section 4.4.2.2.1.
     gpio_write(LED0, 0); // LED is active low!
     busy_wait_ms(140);
     gpio_write(LED0, 1);
     busy_wait_ms(60);
+
+    // Note (Morten, 2022-04-27) My understanding is that it is normal for bluetooth devices to advertise on all three primary
+    // advertising channels (37, 38, 39) in sequence each advertising interval, since scanners only can listen to one channel at the time.
+    // If an advertiser only advertises on one channel per interval the chance of the packet being seen by a scanner drops to 1/3.
+    // I'm not sure how much of advertising/scanning channel selection is convention-based, since the bluetooth spec says:
+    //    "There are no strict timing or advertising channel index selection rules for scanning" (spec 5.1, vol 6, part B, section 4.4.3)
 
     radio_send(37);
     radio_send(38);
