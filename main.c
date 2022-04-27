@@ -204,6 +204,14 @@ radio_send(int channel_index)
 int
 main(void)
 {
+  // Note (Morten, 2022-04-27) If this is commented out, you have to mass-erase the board to disable it. Until then, debugging and flashing is disabled.
+  /*if ((NRF_UICR->APPROTECT & 0xff) != 0x00) {
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen << NVMC_CONFIG_WEN_Pos;
+    NRF_UICR->APPROTECT = 0x00;
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
+    __NVIC_SystemReset();
+  }*/
+
   systick_init();
   radio_init();
   gpio_make_output(LED0);
