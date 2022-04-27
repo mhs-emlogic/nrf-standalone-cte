@@ -179,8 +179,8 @@ radio_send(int channel_index)
   };
   struct AdvPdu pdu = {
     .header =
-        //(6 << 0) | // PDU Type = ADV_SCAN_IND, only the InsightSIP AoA board recognizes this.
-        (2 << 0) | // PDU Type = ADV_NONCONN_IND, both the AoA board and the nRF Connect app on my phone recognize this.
+        (6 << 0) | // PDU Type = ADV_SCAN_IND, only the InsightSIP AoA board recognizes this.
+        //(2 << 0) | // PDU Type = ADV_NONCONN_IND, both the AoA board and the nRF Connect app on my phone recognize this.
         (0 << 4) | // RFU, not sure what this is for
         (0 << 5) | // ChSel bit
         (1 << 6) | // TxAdd bit, set to 1 because AdvA is a random address. See bluetooth spec 5.1, vol 6, part B, section 2.3.1.4.
@@ -207,8 +207,6 @@ main(void)
   systick_init();
   radio_init();
   gpio_make_output(LED0);
-
-  printf("Poggers\n");
 
   while (1) {
     // Note (Morten, 2022-04-27) The waits here control the advertising interval. The interval is supposed to be a multiple of
