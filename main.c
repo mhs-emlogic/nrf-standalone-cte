@@ -73,7 +73,7 @@ mac_to_string(uint8_t mac[6], char string[MAC_STRING_LENGTH])
 
 enum {
   MAX_PACKET_LEN = 64,
-  MAX_CTE_SAMPLES = 256,
+  MAX_CTE_SAMPLES = 700,
 };
 
 static void
@@ -118,11 +118,10 @@ radio_init(void)
   NRF_RADIO->DFECTRL1 =
     ((cte_length_in_8us << RADIO_DFECTRL1_NUMBEROF8US_Pos) & RADIO_DFECTRL1_NUMBEROF8US_Msk) | // TODO is this even considered during reception??
     (RADIO_DFECTRL1_DFEINEXTENSION_CRC << RADIO_DFECTRL1_DFEINEXTENSION_Pos) |
-    (RADIO_DFECTRL1_TSWITCHSPACING_1us << RADIO_DFECTRL1_TSWITCHSPACING_Pos) | // Switch antenna every 1µs.
-    (RADIO_DFECTRL1_TSAMPLESPACINGREF_1us << RADIO_DFECTRL1_TSAMPLESPACINGREF_Pos) | // In reference period, capture a sample every 1µs.
-    (RADIO_DFECTRL1_SAMPLETYPE_IQ << RADIO_DFECTRL1_SAMPLETYPE_Pos) | // Capture IQ samples.
-    (RADIO_DFECTRL1_TSAMPLESPACING_1us << RADIO_DFECTRL1_TSAMPLESPACING_Pos) | // Sample every 1µs after the reference period.
-    (RADIO_DFECTRL1_REPEATPATTERN_Msk); // Repeat pattern as many times as possible/needed.
+    (RADIO_DFECTRL1_TSAMPLESPACINGREF_125ns << RADIO_DFECTRL1_TSAMPLESPACINGREF_Pos) | // In reference period, capture a sample every 1µs.
+    (RADIO_DFECTRL1_TSWITCHSPACING_1us << RADIO_DFECTRL1_TSWITCHSPACING_Pos) | // Antenna switch frequency, if this is > than sample frequency we get multiple samples per antenna + samples during switching
+    (RADIO_DFECTRL1_TSAMPLESPACING_125ns << RADIO_DFECTRL1_TSAMPLESPACING_Pos) |
+    (RADIO_DFECTRL1_SAMPLETYPE_IQ << RADIO_DFECTRL1_SAMPLETYPE_Pos); // Capture IQ samples instead of amplitude/phase samples
   NRF_RADIO->DFECTRL2 = // TODO not sure how to configure these values...
     (0 << RADIO_DFECTRL2_TSWITCHOFFSET_Pos) |
     (0 << RADIO_DFECTRL2_TSAMPLEOFFSET_Pos);
@@ -204,7 +203,9 @@ radio_receive(int channel_index)
       int sample_i = (int) (int16_t) (uint16_t) (g_cte_buffer[i] & 0xffff);
       int sample_q = (int) (int16_t) (uint16_t) ((g_cte_buffer[i] >> 16) & 0xffff);
       printf(" %i,%i,%i\n", i, sample_i, sample_q);
+      busy_wait_ms(1);
     }
+    busy_wait_ms(500);
   }
 }
 
@@ -257,7 +258,7 @@ radio_send(int channel_index)
     uint8_t header;
     uint8_t length;
     uint8_t advertiser_address[6]; // AdvA
-    // no AdvData
+    uint8_t payload[4]; // dummy payload to see how the antenna board reacts
   };
 
   struct AdvPdu pdu = {
@@ -268,18 +269,16 @@ radio_send(int channel_index)
         (0 << 5) | // ChSel bit
         (1 << 6) | // TxAdd bit, set to 1 because AdvA is a random address. See bluetooth spec 5.1, vol 6, part B, section 2.3.1.4.
         (0 << 7),  // RxAdd bit
-    .length = 6,
+    .length = sizeof(struct AdvPdu) - 2, // -2 for 'header' and 'length'
     .advertiser_address = { 0x01, 0x02, 0x03, 0x04, 0x05, 0xc6 }, // Same as the InsightSIP AoA dongle.
+    .payload = { 1, 2, 3, 4 },
   };
 
   NRF_RADIO->PACKETPTR = (uint32_t) (void *) &pdu;
 
 
-  // See section 6.18.5, "Radio states", of nRF52833 product sheet, note the shortcuts configured above in the SHORTS register.
-
-  //NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk;
+  // See section 6.18.5, "Radio states", of nRF52833 product sheet.
   NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_PHYEND_DISABLE_Msk;
-
   NRF_RADIO->EVENTS_DISABLED = 0;
   NRF_RADIO->TASKS_TXEN = 1;
   while (!NRF_RADIO->EVENTS_DISABLED);
@@ -304,21 +303,21 @@ main(void)
   radio_init();
   gpio_make_output(LED0);
 
-  #if 0
+  #if 1
   while (1) {
     radio_receive(37);
   }
   #endif
 
-  #if 1
+  #if 0
   while (1) {
     // Note (Morten, 2022-04-27) The waits here control the advertising interval. The interval is supposed to be a multiple of
     // 0.625ms, but I think that only is relevant when writing the HCI part of a bluetooth stack.
     // See bluetooth spec 5.1, vol 6, part B, section 4.4.2.2.1.
     gpio_write(LED0, 0); // LED is active low!
-    busy_wait_ms(140);
+    busy_wait_ms(70);
     gpio_write(LED0, 1);
-    busy_wait_ms(60);
+    busy_wait_ms(30);
 
     // Note (Morten, 2022-04-27) My understanding is that it is normal for bluetooth devices to advertise on all three primary
     // advertising channels (37, 38, 39) in sequence each advertising interval, since scanners only can listen to one channel at the time.

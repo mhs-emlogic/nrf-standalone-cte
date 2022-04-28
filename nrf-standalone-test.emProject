@@ -61,6 +61,7 @@
     <configuration
       Name="Debug"
       WARNING_LEVEL="4 (All)"
+      c_preprocessor_definitions=""
       gcc_c_only_all_warnings_command_line_options="-Wstrict-prototypes;-Wstrict-aliasing"
       gcc_enable_all_warnings="No"
       gcc_strict_prototypes_warning="Yes"
