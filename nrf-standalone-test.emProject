@@ -49,7 +49,7 @@
     </folder>
     <folder Name="Source Files">
       <configuration Name="Common" filter="c;cpp;cxx;cc;h;s;asm;inc" />
-      <file file_name="main.c" />
+      <file file_name="src/main.c" />
     </folder>
     <folder Name="System Files">
       <file file_name="$(StudioDir)/samples/SEGGER_THUMB_Startup.s" />
