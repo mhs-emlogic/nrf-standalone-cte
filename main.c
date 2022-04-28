@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "nrf52833.h"
 #include "nrf52833_bitfields.h"
@@ -51,6 +52,29 @@ gpio_write(NRF_GPIO_Type *port, int pin, int value)
 
 
 
+enum { MAC_STRING_LENGTH = 18 };
+
+static void
+mac_to_string(uint8_t mac[6], char string[MAC_STRING_LENGTH])
+{
+  const char *HEX = "0123456789abcdef";
+  for (int i = 0; i < 5; ++i) {
+    string[3*i + 2] = ':';
+  }
+  for (int i = 0; i < 6; ++i) {
+    uint8_t byte = mac[5 - i];
+    string[3*i + 0] = HEX[byte >> 4];
+    string[3*i + 1] = HEX[byte & 0xf];
+  }
+  string[MAC_STRING_LENGTH - 1] = 0;
+}
+
+
+
+enum {
+  MAX_PACKET_LEN = 64,
+  MAX_CTE_SAMPLES = 256,
+};
 
 static void
 radio_init(void)
@@ -82,15 +106,28 @@ radio_init(void)
   // Set access address
   NRF_RADIO->BASE0   = 0x89bed600; // See bluetooth spec 5.1, vol 6, part B, section 2.1.2.
   NRF_RADIO->PREFIX0 = 0x0000008e;
-  NRF_RADIO->TXADDRESS = 0; // Use logical address zero, made up of BASE0 and PREFIX0.AP0
+  NRF_RADIO->TXADDRESS = 0; // Use logical address zero when sending, made up of BASE0 and PREFIX0.AP0
+  NRF_RADIO->RXADDRESSES = 1; // Only receive packets with logical address zero
 
-  // Configure CTE
+  // Configure DFE/CTE
   int cte_length_in_8us = 20; // must be >=2 and <=20 corresponding to >=16µs and <=160µs
+
   NRF_RADIO->DFEMODE = RADIO_DFEMODE_DFEOPMODE_AoA;
-  NRF_RADIO->CTEINLINECONF = RADIO_CTEINLINECONF_CTEINLINECTRLEN_Disabled;
+  NRF_RADIO->CTEINLINECONF =
+    RADIO_CTEINLINECONF_CTEINLINECTRLEN_Disabled;
   NRF_RADIO->DFECTRL1 =
-    ((cte_length_in_8us << RADIO_DFECTRL1_NUMBEROF8US_Pos) & RADIO_DFECTRL1_NUMBEROF8US_Msk) |
-    (RADIO_DFECTRL1_DFEINEXTENSION_CRC << RADIO_DFECTRL1_DFEINEXTENSION_Pos);
+    ((cte_length_in_8us << RADIO_DFECTRL1_NUMBEROF8US_Pos) & RADIO_DFECTRL1_NUMBEROF8US_Msk) | // TODO is this even considered during reception??
+    (RADIO_DFECTRL1_DFEINEXTENSION_CRC << RADIO_DFECTRL1_DFEINEXTENSION_Pos) |
+    (RADIO_DFECTRL1_TSWITCHSPACING_1us << RADIO_DFECTRL1_TSWITCHSPACING_Pos) | // Switch antenna every 1µs.
+    (RADIO_DFECTRL1_TSAMPLESPACINGREF_1us << RADIO_DFECTRL1_TSAMPLESPACINGREF_Pos) | // In reference period, capture a sample every 1µs.
+    (RADIO_DFECTRL1_SAMPLETYPE_IQ << RADIO_DFECTRL1_SAMPLETYPE_Pos) | // Capture IQ samples.
+    (RADIO_DFECTRL1_TSAMPLESPACING_1us << RADIO_DFECTRL1_TSAMPLESPACING_Pos) | // Sample every 1µs after the reference period.
+    (RADIO_DFECTRL1_REPEATPATTERN_Msk); // Repeat pattern as many times as possible/needed.
+  NRF_RADIO->DFECTRL2 = // TODO not sure how to configure these values...
+    (0 << RADIO_DFECTRL2_TSWITCHOFFSET_Pos) |
+    (0 << RADIO_DFECTRL2_TSAMPLEOFFSET_Pos);
+  for (int i = 0; i < 3; ++i) NRF_RADIO->SWITCHPATTERN = 0; // One entry for normal operation, one for reference period, one for each switch (this is repeated, doesn't matter because we have just one antenna).
+  NRF_RADIO->DFEPACKET.MAXCNT = MAX_CTE_SAMPLES;
 
   // Configure packet data format
   NRF_RADIO->PCNF0 =
@@ -100,20 +137,15 @@ radio_init(void)
     (RADIO_PCNF0_PLEN_8bit << RADIO_PCNF0_PLEN_Pos) |
     (RADIO_PCNF0_CRCINC_Exclude << RADIO_PCNF0_CRCINC_Pos);
   NRF_RADIO->PCNF1 =
-    ((255 << RADIO_PCNF1_MAXLEN_Pos) & RADIO_PCNF1_MAXLEN_Msk) |
+    ((MAX_PACKET_LEN << RADIO_PCNF1_MAXLEN_Pos) & RADIO_PCNF1_MAXLEN_Msk) |
     (3 << RADIO_PCNF1_BALEN_Pos) | // 3 bytes base address + 1 byte prefix gives 4 bytes of access address
     (RADIO_PCNF1_ENDIAN_Little << RADIO_PCNF1_ENDIAN_Pos) |
     (RADIO_PCNF1_WHITEEN_Enabled << RADIO_PCNF1_WHITEEN_Pos); // Whitening is also configured just before sending because it is frequency dependent
-
-  // Configure shortcuts to simplify the transmit sequence
-  NRF_RADIO->SHORTS =
-    RADIO_SHORTS_READY_START_Msk |
-    RADIO_SHORTS_END_DISABLE_Msk;
 }
 
 
 static void
-radio_send(int channel_index)
+radio_set_channel(int channel_index)
 {
   int frequency = 0; // 2.4GHz + frequency*1MHz
   if (0 <= channel_index && channel_index <= 10) {
@@ -128,9 +160,59 @@ radio_send(int channel_index)
     frequency = 80;
   }
 
-  // Configure transmitter parameters
   NRF_RADIO->FREQUENCY = frequency;
   NRF_RADIO->DATAWHITEIV = channel_index; // See bluetooth spec 5.1, vol 6, part B, section 3.2.
+}
+
+
+static uint32_t g_cte_buffer[MAX_CTE_SAMPLES];
+
+static void
+radio_receive(int channel_index)
+{
+  radio_set_channel(channel_index);
+
+  uint8_t receive_buffer[2 + MAX_PACKET_LEN]; // allocate extra space for S0 byte and LEN byte
+  memset(receive_buffer, 0, sizeof(receive_buffer));
+  NRF_RADIO->PACKETPTR = (uint32_t) (void *) receive_buffer;
+
+  memset(g_cte_buffer, 0, sizeof(g_cte_buffer));
+  NRF_RADIO->DFEPACKET.PTR = (uint32_t) (void *) g_cte_buffer;
+
+  NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_PHYEND_DISABLE_Msk; // END triggers at start of CTE, PHYEND at end of CTE, so we need PHYEND here!
+
+  // I guess you normally want to have a timeout here in case there actually is no traffic.
+  int wait_count = 0;
+  NRF_RADIO->EVENTS_DISABLED = 0;
+  NRF_RADIO->TASKS_RXEN = 1;
+  while (!NRF_RADIO->EVENTS_DISABLED) ++wait_count;
+
+  uint8_t dongle_mac[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0xc6 };
+  if (NRF_RADIO->CRCSTATUS &&
+      receive_buffer[0] == 0x46 &&
+      receive_buffer[1] == 6 &&
+      memcmp(dongle_mac, receive_buffer + 2, 6) == 0)
+  {
+    char address_string[MAC_STRING_LENGTH];
+    mac_to_string(receive_buffer + 2, address_string);
+
+    int cte_count = NRF_RADIO->DFEPACKET.AMOUNT;
+    printf("%s sent %i cte samples:\n", address_string, cte_count);
+    for (int i = 0; i < cte_count; ++i) {
+      if (i == 0) printf("reference:\n");
+      if (i == 8) printf("data:\n");
+      int sample_i = (int) (int16_t) (uint16_t) (g_cte_buffer[i] & 0xffff);
+      int sample_q = (int) (int16_t) (uint16_t) ((g_cte_buffer[i] >> 16) & 0xffff);
+      printf(" %i,%i,%i\n", i, sample_i, sample_q);
+    }
+  }
+}
+
+
+static void
+radio_send(int channel_index)
+{
+  radio_set_channel(channel_index);
 
   /*
 
@@ -177,6 +259,7 @@ radio_send(int channel_index)
     uint8_t advertiser_address[6]; // AdvA
     // no AdvData
   };
+
   struct AdvPdu pdu = {
     .header =
         (6 << 0) | // PDU Type = ADV_SCAN_IND, only the InsightSIP AoA board recognizes this.
@@ -191,7 +274,12 @@ radio_send(int channel_index)
 
   NRF_RADIO->PACKETPTR = (uint32_t) (void *) &pdu;
 
+
   // See section 6.18.5, "Radio states", of nRF52833 product sheet, note the shortcuts configured above in the SHORTS register.
+
+  //NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_END_DISABLE_Msk;
+  NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk | RADIO_SHORTS_PHYEND_DISABLE_Msk;
+
   NRF_RADIO->EVENTS_DISABLED = 0;
   NRF_RADIO->TASKS_TXEN = 1;
   while (!NRF_RADIO->EVENTS_DISABLED);
@@ -216,6 +304,13 @@ main(void)
   radio_init();
   gpio_make_output(LED0);
 
+  #if 0
+  while (1) {
+    radio_receive(37);
+  }
+  #endif
+
+  #if 1
   while (1) {
     // Note (Morten, 2022-04-27) The waits here control the advertising interval. The interval is supposed to be a multiple of
     // 0.625ms, but I think that only is relevant when writing the HCI part of a bluetooth stack.
@@ -235,6 +330,7 @@ main(void)
     radio_send(38);
     radio_send(39);
   }
+  #endif
 
   return 0;
 }
