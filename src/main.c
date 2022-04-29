@@ -71,9 +71,18 @@ main(void)
     gpio_write(LED0, 1);
     busy_wait_ms(30);
 
+    // As far as I can tell, adding this payload to the packet doesn't affect the direction finding by the antenna board (it just seems to ignore the payload).
+    // But it allows us to transmit data which we can access with a separate receiver.
+    uint8_t beacon_payload[] = {
+      // The format of this data is described in bluetooth spec 5.1, vol 3, part C, section 11.
+      11, 0x09, 'e', 'm', 'l', 'o', 'g', 'i', 'c', '.', 'n', 'o', // 11 = length (1 byte for 0x09, 10 for string), 0x09 = local name
+      0, // end of advertising data
+    };
+
     struct RadioAdvertisement cte_ad = {
       .address = { 0x01, 0x02, 0x03, 0x04, 0x05, 0xc6 }, // this is the address the dongle from InsightSiPs AoA demo uses.
-      .payload_len = 0,
+      .payload_len = sizeof(beacon_payload),
+      .payload = beacon_payload,
       .cte_length = 20,
     };
     radio_advertise(cte_ad);

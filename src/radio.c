@@ -9,40 +9,47 @@
 
 /*
 
-TODO update this comment
+We want to send a LE Uncoded PHY packet (bluetooth spec 5.1, vol 6, part B, section 2.1) containing advertising data.
 
-The packet I want to send:
-  LE UNCODED PHY DATA
-    Preamble (1 byte when 1M, 01010101 or 10101010, last bit shall be oposite of first bit of access address)
-    Access address (4 bytes, wild rules)
-    Advertising physical channel PDU, see bluetooth spec 5.1, vol 6, part B, section 2.3, table 2.3
-      Header
-        PDU Type (4 bits, 0110b = ADV_SCAN_IND, 0000b = ADV_IND, etc.)
-        RFU (1 bit, not sure what this is...)
-        ChSel (1 bit, unused, should be 0)
-        TxAdd (1 bit, TxAdd=1 if AdvA is a random address)
-        RxAdd (1 bit, unused, should be 0)
-        Length (8 bits, length of remaining payload in bytes)
-      Payload
-        AdvA (6 bytes, C6:05:04:03:02:01, endiannes?)
-        AdvData (0 bytes)
-    CRC (3 bytes)
-    CTE (160µs)
+We are sending ADV_NONCONN_IND, because that is recognized by both the InsightSIP antenna board and the nRF-connect app
+on my phone. The format of these packets is equal to ADV_SCAN_IND (which is what the InsightSiP dongle sends) and ADV_IND.
 
-The RADIO peripheral has some half-structured way of transmitting data:
-  PREAMBLE  (0x55 or 0xaa chosen automatically based on address, size depends on MODE register)
+We are transmitting at 1Mbit/s, which is required for ADV_NONCONN_IND packets. See bluetooth spec 5.1, vol 6, part B, table 2.3.
 
-  BLE access address gets split across two fields:
-    BASE      (length controlled by PCNF1.BALEN)
-    PREFIX    (1 byte)
-
-  The next bytes are read from PACKETPTR via DMA
-    S0        (configured via S0LEN, use for first 8 bits of the header)
-    LENGTH    (configured via LFLEN, used for length field. RADIO reads this value from PACKETPTR and uses it to decide how long PAYLOAD should be)
-    S1        (configured via S1LEN to not be used)
-    PAYLOAD
-
-  CRC       (Automatically computed and transmitted)
+The full transmission consists of:
+  - Preamble
+      1 byte, either 01010101 or 10101010.
+      Last bit shall be oposite of first bit of access address).
+      The RADIO peripheral automatically sends this.
+  - Access address
+      4 bytes.
+      Must be 0x8e89bed6 for advertising packets, see bluetooth spec 5.1, vol 6, part B, section 2.1.2.
+      This is set in the BASE and PREFIX registers of the RADIO peripheral.
+  - Packet PDU
+      Contains advertising packet.
+      Data is passed to RADIO peripheral via DMA through the PACKETPTR register.
+      - Header (refered to as S0 and LENGTH bytes by RADIO peripheral)
+        - PDU Type (4 bits, 0110b = ADV_SCAN_IND, 0000b = ADV_IND, etc.)
+        - RFU (1 bit, not sure what this is...)
+        - ChSel (1 bit, unused, should be 0)
+        - TxAdd (1 bit, TxAdd=1 if AdvA is a random address (which the dongle address is))
+        - RxAdd (1 bit, unused, should be 0)
+        - Length (8 bits, length of remaining payload in bytes)
+      - Payload
+        - AdvA
+            6 bytes.
+            The InsightSiP dongle uses c6:05:04:03:02:01 (which is transmitted little endian, so the 0x01 byte goes first).
+            RadioAdvertisement.address configures this.
+        - AdvData
+            Up to 31 bytes.
+            Described in bluetooth spec 5.1, vol 3, part C, section 11.
+            RadioAdvertisement.payload configures this.
+  - CRC
+      3 bytes.
+      Only covers the packet PDU.
+      We configure the RADIO peripheral to compute and transmit this.
+  - CTE
+      Optional, between 16µs and 160µs when present.
 
 */
 
@@ -77,21 +84,7 @@ radio_init(void)
   NRF_RADIO->PREFIX0 = 0x0000008e;
   NRF_RADIO->TXADDRESS = 0; // Use logical address zero when sending, made up of BASE0 and PREFIX0.AP0
 
-  // Configure DFE/CTE
-  int cte_length_in_8us = 20; // must be >=2 and <=20 corresponding to >=16µs and <=160µs
-
-  NRF_RADIO->DFEMODE = RADIO_DFEMODE_DFEOPMODE_AoA;
-  NRF_RADIO->CTEINLINECONF =
-    RADIO_CTEINLINECONF_CTEINLINECTRLEN_Disabled;
-  NRF_RADIO->DFECTRL1 =
-    ((cte_length_in_8us << RADIO_DFECTRL1_NUMBEROF8US_Pos) & RADIO_DFECTRL1_NUMBEROF8US_Msk) | // TODO is this even considered during reception??
-    (RADIO_DFECTRL1_DFEINEXTENSION_CRC << RADIO_DFECTRL1_DFEINEXTENSION_Pos) |
-    (RADIO_DFECTRL1_TSAMPLESPACINGREF_125ns << RADIO_DFECTRL1_TSAMPLESPACINGREF_Pos) | // In reference period, capture a sample every 1µs.
-    (RADIO_DFECTRL1_TSWITCHSPACING_1us << RADIO_DFECTRL1_TSWITCHSPACING_Pos) | // Antenna switch frequency, if this is > than sample frequency we get multiple samples per antenna + samples during switching
-    (RADIO_DFECTRL1_TSAMPLESPACING_125ns << RADIO_DFECTRL1_TSAMPLESPACING_Pos) |
-    (RADIO_DFECTRL1_SAMPLETYPE_IQ << RADIO_DFECTRL1_SAMPLETYPE_Pos); // Capture IQ samples instead of amplitude/phase samples
-
-  // Configure packet data format
+  // Configure packet data format, see comment at start of file.
   NRF_RADIO->PCNF0 =
     (1 << RADIO_PCNF0_S0LEN_Pos) |
     (8 << RADIO_PCNF0_LFLEN_Pos) |
@@ -141,7 +134,7 @@ radio_advertise(struct RadioAdvertisement advertisement)
     return; // TODO report error to user somehow?
   }
 
-  // See bluetooth spec 5.1, vol 6, part B, section 2.3, figures 2.4 and 2.5 for format.
+  // Set up packet data for DMA.
   uint8_t buffer[2 + 6 + RadioAdvertisement_MAX_PAYLOAD_LEN]; // 2 bytes for header, 6 for address
   buffer[0] =
     (2 << 0) | // PDU Type = ADV_NONCONN_IND, both the AoA board and the nRF Connect app on my phone recognize this.
@@ -154,6 +147,17 @@ radio_advertise(struct RadioAdvertisement advertisement)
   memcpy(&buffer[8], advertisement.payload, advertisement.payload_len);
 
   NRF_RADIO->PACKETPTR = (uint32_t) (void *) buffer;
+
+  // Configure DFE/CTE.
+  if (advertisement.cte_length > 0) {
+    NRF_RADIO->DFEMODE = RADIO_DFEMODE_DFEOPMODE_AoA;
+    NRF_RADIO->CTEINLINECONF = RADIO_CTEINLINECONF_CTEINLINECTRLEN_Disabled;
+    NRF_RADIO->DFECTRL1 =
+      ((advertisement.cte_length << RADIO_DFECTRL1_NUMBEROF8US_Pos) & RADIO_DFECTRL1_NUMBEROF8US_Msk) |
+      (RADIO_DFECTRL1_DFEINEXTENSION_CRC << RADIO_DFECTRL1_DFEINEXTENSION_Pos); // Place CTE after CRC
+  } else {
+    NRF_RADIO->DFEMODE = RADIO_DFEMODE_DFEOPMODE_Disabled;
+  }
 
   // Note (Morten, 2022-04-27) My understanding is that it is normal for bluetooth devices to advertise on all three primary
   // advertising channels (37, 38, 39) in sequence each advertising interval, since scanners only can listen to one channel at the time.
