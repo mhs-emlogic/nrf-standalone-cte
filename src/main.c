@@ -55,6 +55,8 @@ gpio_write(NRF_GPIO_Type *port, int pin, int value)
 
 #define LED0    NRF_P0, 13
 
+static struct IQ iq_samples[512];
+
 int
 main(void)
 {
@@ -62,6 +64,26 @@ main(void)
   radio_init();
   gpio_make_output(LED0);
 
+  #if 1
+  while (1) {
+    struct RadioAdvertisementReception reception = {
+      .channel_index = 37,
+      .address = { 0x01, 0x02, 0x03, 0x04, 0x05, 0xc6 },
+      .cte_cap = sizeof(iq_samples) / sizeof(struct IQ),
+      .cte = iq_samples,
+    };
+    radio_receive(&reception);
+
+    printf("\n\n\nGot samples %i:\n", reception.cte_len);
+    for (int i = 0; i < reception.cte_len; ++i) {
+      printf("%i   %i %i\n", i, iq_samples[i].i, iq_samples[i].q);
+      busy_wait_ms(1);
+    }
+    busy_wait_ms(1000);
+  }
+  #endif
+
+  #if 0
   while (1) {
     // Note (Morten, 2022-04-27) The waits here control the advertising interval. The interval is supposed to be a multiple of
     // 0.625ms, but I think that only is relevant when writing the HCI part of a bluetooth stack.
@@ -79,7 +101,7 @@ main(void)
       0, // end of advertising data
     };
 
-    struct RadioAdvertisement cte_ad = {
+    struct RadioAdvertisement cte_ad = {  
       .address = { 0x01, 0x02, 0x03, 0x04, 0x05, 0xc6 }, // this is the address the dongle from InsightSiPs AoA demo uses.
       .payload_len = sizeof(beacon_payload),
       .payload = beacon_payload,
@@ -87,6 +109,7 @@ main(void)
     };
     radio_advertise(cte_ad);
   }
+  #endif
 
   return 0;
 }

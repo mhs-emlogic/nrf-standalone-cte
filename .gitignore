@@ -1,4 +1,5 @@
 *.emSession
 *.jlink
+*.jdebug.user
 Output/*
 ozone*
